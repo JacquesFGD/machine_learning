@@ -1,0 +1,115 @@
+---
+title: "Machine_learning"
+author: "JacquesFGD"
+date: "Saturday, October 25, 2014"
+output: html_document
+---
+
+This document presents a model building to analyze a set of data obtained by sensors, and use this data to classify different ways to perform the exercise. The data was obtained from the [Groupware website](http://groupware.les.inf.puc-rio.br/har).
+
+##Data preparation
+
+```{r Data_loading}
+library(caret)
+library(ggplot2)
+library(randomForest)
+setwd("~/Data science/Machinelearning")
+training <- read.csv('pml-training.csv')
+finaltest <- read.csv('pml-testing.csv')
+```
+
+A rapid examination of the data set shows two types of rows are present, depending on whether the observation is a new window or not. The rows that do not represent a new window have a few values representing instantaneous observations, the new windows have a lot more "summary" values (mean, max, ...). Given the format of the test values, we will focus only on the columns for which we have all values, and eliminate the ones that are only present for new windows. We will also eliminate the reference variables (time stamp and user name) from the variables that will be used to predict.
+
+```{r Subsetting}
+init <- training[1,]
+valid <- !is.na(init) & init != ''
+train.sub <- training[,valid]
+train.sub <- train.sub[,8:60]
+train.class <- train.sub$classe
+```
+
+##Data slicing
+
+Next, we will slice the data between training and testing sets that will be used to evaluate our algorithm. Here, we will use a 10-fold cross validation.
+
+```{r Slicing}
+set.seed(666)
+foldstrain <- createFolds(train.class, k=10, list=TRUE, returnTrain=TRUE)
+set.seed(666)
+foldstest <- createFolds(train.class, k=10, list=TRUE, returnTrain=FALSE)
+```
+
+##Model building
+
+We will first detail the code and algorthim using the first fold, then apply the same procedure to all folds at the end to estimate our in and out-of-sample errors.
+
+```{r Correlation}
+train.k <- train.sub[foldstrain[[1]],]
+test.k <- train.sub[foldstest[[1]],]
+```
+
+First we will explore the 52 variables available to look at the ones that may be a good predictor of class. The code is shown below but not evaluated to avoid displaying the 52 graphs.
+
+```{r Exploration, eval=FALSE}
+for (i in 1:52){
+    print(paste(i,colnames(train.k)[i]))
+    m <- ggplot(train.k, aes(x=train.k[,i], colour=train.k[,53], group=train.k[,53]))
+    print(m + geom_density(fill=NA))
+}
+```
+
+##Parameter selection and pre-processing
+
+Based on these density graphs, we selected 20 variables that have different densities for different classes. Other variables can vary a lot, independently of the class of results, and would dominate the principal component without helping us discriminate between classes.
+Next, we perform a principal component analysis on the 20 variables selected, keeping enough PCs to explain 90% of the variance.
+
+```{r Preprocess_sub}
+interest <- c(1,3,4,10,14,18,19,20,24,27,28,29,35,36,39,40,41,47,48,50,53)
+train.int <- train.k[,interest]
+test.int <- test.k[,interest]
+PCA.int <- preProcess(train.int[,-21], method='pca', thresh=0.9)
+train.int.PC <- data.frame(predict(PCA.int, train.int[,-21]), train.int[,21])
+test.int.PC <- data.frame(predict(PCA.int, test.int[,-21]), test.int[,21])
+colnames(train.int.PC)[ncol(train.int.PC)] <- 'classe'
+colnames(test.int.PC)[ncol(test.int.PC)] <- 'classe'
+```
+
+##Model building
+
+We will then use the pre-processed data for prediction, using a random forest model. After that, we use the predictor to calculate in sample and out of sample accuracy (here, the proportion of correct prediction on the training and test set)
+
+```{r Training}
+model.int <- train(classe ~ ., data=train.int.PC, method='rf')
+assign(paste0('model',as.character(1)), model.int)
+in_samp_acc = vector('numeric', length=10)
+in_samp_acc[1] = mean(predict(model.int, train.int.PC[,1:(ncol(train.int.PC)-1)]) == train.int.PC[,ncol(train.int.PC)])
+out_samp_acc = vector('numeric', length=10)
+out_samp_acc[1] = mean(predict(model.int, test.int.PC[,1:(ncol(test.int.PC)-1)]) == test.int.PC[,ncol(test.int.PC)])
+val = out_samp_acc[1]
+```
+
+On this first model, we obtained a good out of sample accuracy, of `r val`. We can thus use the same method on the other folds, to cross-validate our model building.
+
+##Cross validation
+
+```{r Cross}
+for (k in 2:10){
+    train.k <- train.sub[foldstrain[[k]],]
+    test.k <- train.sub[foldstest[[k]],]
+    train.int <- train.k[,interest]
+    test.int <- test.k[,interest]
+    PCA.int <- preProcess(train.int[,-21], method='pca', thresh=0.9)
+    train.int.PC <- data.frame(predict(PCA.int, train.int[,-21]), train.int[,21])
+    test.int.PC <- data.frame(predict(PCA.int, test.int[,-21]), test.int[,21])
+    colnames(train.int.PC)[ncol(train.int.PC)] <- 'classe'
+    colnames(test.int.PC)[ncol(test.int.PC)] <- 'classe'
+    model.int <- train(classe ~ ., data=train.int.PC, method='rf')
+    assign(paste0('model',as.character(k)), model.int)
+    in_samp_acc[k] = mean(predict(model.int, train.int.PC[,1:(ncol(train.int.PC)-1)]) == train.int.PC[,ncol(train.int.PC)])
+    out_samp_acc[k] = mean(predict(model.int, test.int.PC[,1:(ncol(test.int.PC)-1)]) == test.int.PC[,ncol(test.int.PC)])
+}
+print(in_samp_acc)
+print(out_samp_acc)
+```
+
+We have obtained an estimate for our out of sample error with those 10 models, and can use them to predict the final test for the assignment.
